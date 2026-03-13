@@ -167,4 +167,11 @@
       {{ print.termsAndConditions }}
     </p>
   </section>
+  <section v-if="doc.zatca_qr" class="mt-8 flex flex-col items-center">
+    <p class="text-xs text-gray-500 mb-2">{{ t`ZATCA Tax Invoice` }}</p>
+    <div class="p-2 border border-gray-200 rounded">
+      <img :src="'data:image/png;base64,' + doc.zatca_qr" class="w-32 h-32" />
+    </div>
+    <p class="text-[10px] text-gray-400 mt-2">{{ doc.zatca_uuid }}</p>
+  </section>
 </main>

@@ -342,6 +342,11 @@ function getCompleteSidebar(): SidebarConfig {
           name: 'settings',
           route: '/settings',
         },
+        {
+          label: t`ZATCA`,
+          name: 'zatca-onboarding',
+          route: '/zatca-onboarding',
+        },
       ] as SidebarItem[],
     },
   ].flat();

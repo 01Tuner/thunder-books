@@ -55,6 +55,7 @@ const fswatcher = chokidar.watch([
   path.join(root, 'main'),
   path.join(root, 'backend'),
   path.join(root, 'schemas'),
+  path.join(root, 'utils'),
 ]);
 
 /**

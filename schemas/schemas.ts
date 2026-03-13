@@ -82,6 +82,7 @@ import ERPNextSyncQueue from './app/ERPNextSyncQueue.json';
 import FetchFromERPNextQueue from './app/FetchFromERPNextQueue.json';
 import IntegrationErrorLog from './app/IntegrationErrorLog.json';
 import ItemGroup from './app/ItemGroup.json';
+import ZATCASettings from './app/ZATCASettings.json';
 import { Schema, SchemaStub } from './types';
 import ItemEnquiry from './app/ItemEnquiry.json';
 
@@ -196,4 +197,5 @@ export const appSchemas: Schema[] | SchemaStub[] = [
   FetchFromERPNextQueue as Schema,
 
   IntegrationErrorLog as Schema,
+  ZATCASettings as Schema,
 ];

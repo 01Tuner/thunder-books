@@ -42,6 +42,11 @@ export enum IPC_ACTIONS {
   DB_CALL = 'db-call',
   DB_BESPOKE = 'db-bespoke',
   DB_SCHEMA = 'db-schema',
+  // ZATCA
+  ZATCA_PROCESS = 'zatca-process',
+  ZATCA_GENERATE_CSR = 'zatca-generate-csr',
+  ZATCA_ISSUE_CERT = 'zatca-issue-cert',
+  ZATCA_ISSUE_PRODUCTION_CERT = 'zatca-issue-production-cert',
 }
 
 // ipcMain.send(...)

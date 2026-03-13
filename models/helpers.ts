@@ -345,6 +345,25 @@ export function getMakeReturnDocAction(fyo: Fyo): Action {
   };
 }
 
+export function getZatcaStatusColumn(): ColumnConfig {
+  return {
+    label: t`ZATCA Status`,
+    fieldname: 'zatca_status',
+    fieldtype: 'Select',
+    render(doc) {
+      const status = doc.zatca_status || '';
+      let color = 'gray';
+      if (status === 'REPORTED') color = 'blue';
+      if (status === 'CLEARED') color = 'green';
+      if (status === 'REJECTED') color = 'red';
+
+      return {
+        template: `<Badge class="text-xs" color="${color}">${status || 'Not Sent'}</Badge>`,
+      };
+    },
+  };
+}
+
 export function getTransactionStatusColumn(): ColumnConfig {
   return {
     label: t`Status`,

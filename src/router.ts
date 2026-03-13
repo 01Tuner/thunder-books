@@ -11,6 +11,7 @@ import Report from 'src/pages/Report.vue';
 import Settings from 'src/pages/Settings/Settings.vue';
 import TemplateBuilder from 'src/pages/TemplateBuilder/TemplateBuilder.vue';
 import CustomizeForm from 'src/pages/CustomizeForm/CustomizeForm.vue';
+import ZATCAOnboarding from 'src/pages/ZATCA/ZATCAOnboarding.vue';
 import POS from 'src/pages/POS/POS.vue';
 import type { HistoryState } from 'vue-router';
 import { createRouter, createWebHistory, RouteRecordRaw } from 'vue-router';
@@ -136,6 +137,11 @@ const routes: RouteRecordRaw[] = [
       default: true,
       edit: (route) => route.query,
     },
+  },
+  {
+    path: '/zatca-onboarding',
+    name: 'ZATCA Onboarding',
+    component: ZATCAOnboarding,
   },
 ];
 

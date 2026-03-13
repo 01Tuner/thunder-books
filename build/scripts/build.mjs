@@ -83,6 +83,8 @@ async function buildRendererProcessSource() {
         reports: path.join(root, 'reports'),
         dummy: path.join(root, 'dummy'),
         fixtures: path.join(root, 'fixtures'),
+        'zatca-xml-js': path.join(root, 'dummy/zatca-xml-js.ts'),
+        crypto: path.join(root, 'dummy/crypto.ts'),
       },
     },
   });

@@ -125,7 +125,64 @@
       "edit": false,
       "readOnly": true,
       "section": "References"
+    },
+    {
+      "fieldname": "zatca_qr",
+      "label": "ZATCA QR Code (Base64)",
+      "fieldtype": "Text",
+      "readOnly": true,
+      "section": "ZATCA Details"
+    },
+    {
+      "fieldname": "zatca_status",
+      "label": "ZATCA Status",
+      "fieldtype": "Select",
+      "options": [
+        {
+          "value": "Pending",
+          "label": "Pending"
+        },
+        {
+          "value": "Reported",
+          "label": "Reported"
+        },
+        {
+          "value": "Cleared",
+          "label": "Cleared"
+        },
+        {
+          "value": "Failed",
+          "label": "Failed"
+        }
+      ],
+      "default": "Pending",
+      "readOnly": true,
+      "section": "ZATCA Details"
+    },
+    {
+      "fieldname": "zatca_uuid",
+      "label": "ZATCA UUID",
+      "fieldtype": "Data",
+      "readOnly": true,
+      "section": "ZATCA Details"
+    },
+    {
+      "fieldname": "zatca_hash",
+      "label": "ZATCA Hash",
+      "fieldtype": "Data",
+      "readOnly": true,
+      "section": "ZATCA Details"
+    },
+    {
+      "fieldname": "zatca_xml",
+      "label": "ZATCA XML",
+      "fieldtype": "Text",
+      "readOnly": true,
+      "section": "ZATCA Details"
     }
   ],
-  "keywordFields": ["name", "party"]
+  "keywordFields": [
+    "name",
+    "party"
+  ]
 }

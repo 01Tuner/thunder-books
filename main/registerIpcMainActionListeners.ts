@@ -303,4 +303,48 @@ export default function registerIpcMainActionListeners(main: Main) {
       return databaseManager.getSchemaMap();
     });
   });
+
+  /**
+   * ZATCA Processing - runs in main process where Node.js crypto is available
+   */
+  ipcMain.handle(
+    IPC_ACTIONS.ZATCA_PROCESS,
+    async (_, invoiceData: Record<string, unknown>, settingsData: Record<string, unknown>) => {
+      return await getErrorHandledReponse(async () => {
+        const { processZatcaPhase2FromIPC } = await import('../utils/zatcaPhase2');
+        return await processZatcaPhase2FromIPC(invoiceData, settingsData, databaseManager);
+      });
+    }
+  );
+
+  ipcMain.handle(
+    IPC_ACTIONS.ZATCA_GENERATE_CSR,
+    async (_, settingsData: Record<string, unknown>) => {
+      return await getErrorHandledReponse(async () => {
+        const { generateZatcaCSR } = await import('../utils/zatcaPhase2');
+        return await generateZatcaCSR(settingsData);
+      });
+    }
+  );
+
+  ipcMain.handle(
+    IPC_ACTIONS.ZATCA_ISSUE_CERT,
+    async (_, settingsData: Record<string, unknown>, otp: string) => {
+      return await getErrorHandledReponse(async () => {
+        const { issueZatcaCertificate } = await import('../utils/zatcaPhase2');
+        return await issueZatcaCertificate(settingsData, otp);
+      });
+    }
+  );
+
+  ipcMain.handle(
+    IPC_ACTIONS.ZATCA_ISSUE_PRODUCTION_CERT,
+    async (_, settingsData: Record<string, unknown>, complianceRequestId: string) => {
+      return await getErrorHandledReponse(async () => {
+        const { issueZatcaProductionCertificate } = await import('../utils/zatcaPhase2');
+        return await issueZatcaProductionCertificate(settingsData, complianceRequestId);
+      });
+    }
+  );
 }
+

@@ -7,6 +7,7 @@ import {
   getInvoiceActions,
   getReturnLoyaltyPoints,
   getTransactionStatusColumn,
+  getZatcaStatusColumn,
 } from '../../helpers';
 import { Invoice } from '../Invoice/Invoice';
 import { SalesInvoiceItem } from '../SalesInvoiceItem/SalesInvoiceItem';
@@ -16,9 +17,104 @@ import { Party } from '../Party/Party';
 import { ValidationError } from 'fyo/utils/errors';
 import { Money } from 'pesa';
 import { Doc } from 'fyo/model/doc';
+import { ZATCASettings } from '../ZATCASettings/ZATCASettings';
 
 export class SalesInvoice extends Invoice {
   items?: SalesInvoiceItem[];
+  zatca_qr?: string;
+  zatca_uuid?: string;
+  zatca_hash?: string;
+  zatca_xml?: string;
+  zatca_status?: string;
+
+  async beforeSubmit() {
+    await super.beforeSubmit();
+  }
+
+  async afterSubmit() {
+    await super.afterSubmit?.();
+    console.log('[ZATCA] afterSubmit triggered for', this.name);
+
+    const zatcaSettings = (await this.fyo.doc.getDoc(
+      ModelNameEnum.ZATCASettings,
+      ModelNameEnum.ZATCASettings
+    )) as ZATCASettings;
+
+    console.log('[ZATCA] settings sellerName:', zatcaSettings?.sellerName, 'vatNumber:', zatcaSettings?.vatNumber);
+
+    if (!(zatcaSettings && zatcaSettings.sellerName && zatcaSettings.vatNumber)) {
+      console.warn('[ZATCA] Skipping: ZATCA settings incomplete');
+      return;
+    }
+
+    const invoiceData: Record<string, unknown> = {
+      name: this.name,
+      date: this.date,
+      zatca_uuid: this.zatca_uuid,
+      items: (this.items || []).map((item) => ({
+        name: item.name,
+        item: (item as any).item,
+        quantity: item.quantity,
+        rate: (item.rate as any)?.float ?? (item.rate as any) ?? 0,
+        itemDiscountAmount: (item as any).itemDiscountAmount?.float ?? 0,
+      })),
+    };
+
+    const settingsData: Record<string, unknown> = {
+      sellerName: zatcaSettings.sellerName,
+      vatNumber: zatcaSettings.vatNumber,
+      privateKey: (zatcaSettings as any).privateKey,
+      clientId: (zatcaSettings as any).clientId,
+      clientSecret: (zatcaSettings as any).clientSecret,
+    };
+
+    console.log('[ZATCA] isElectron:', this.fyo.isElectron, 'ipc exists:', !!(window as any)?.ipc, 'zatcaProcess fn:', !!(window as any)?.ipc?.zatcaProcess);
+
+    try {
+      let result: Record<string, unknown> | null = null;
+
+      if (this.fyo.isElectron && (window as any)?.ipc) {
+        // Run on the main (Node.js) process via IPC to access crypto modules
+        console.log('[ZATCA] Invoking zatcaProcess via IPC...');
+        const resp = await (window as any).ipc.zatcaProcess(invoiceData, settingsData);
+        console.log('[ZATCA] IPC response:', resp);
+        if (resp?.error) {
+          console.error('[ZATCA] IPC error from main process:', resp.error?.message || resp.error);
+        }
+        if (resp?.data) {
+          result = resp.data as Record<string, unknown>;
+        }
+      } else {
+        // Non-Electron / test context: run directly (requires Node.js env)
+        const { processZatcaPhase2 } = await import('../../../utils/zatcaPhase2');
+        await processZatcaPhase2(this, zatcaSettings, this.fyo);
+        return;
+      }
+
+      if (result) {
+        // Persist ZATCA fields back to the already-submitted invoice record
+        await this.fyo.db.update(ModelNameEnum.SalesInvoice, {
+          name: this.name as string,
+          zatca_xml: (result.zatca_xml as string) ?? null,
+          zatca_hash: (result.zatca_hash as string) ?? null,
+          zatca_qr: (result.zatca_qr as string) ?? null,
+          zatca_uuid: (result.zatca_uuid as string) ?? null,
+          zatca_status: (result.zatca_status as string) ?? null,
+        });
+        // Update in-memory values too
+        this.zatca_xml = result.zatca_xml as string;
+        this.zatca_hash = result.zatca_hash as string;
+        this.zatca_qr = result.zatca_qr as string;
+        this.zatca_uuid = result.zatca_uuid as string;
+        this.zatca_status = result.zatca_status as string;
+        console.log('[ZATCA] Fields saved successfully. QR:', this.zatca_qr?.substring(0, 30));
+      } else {
+        console.warn('[ZATCA] IPC returned no data');
+      }
+    } catch (err: any) {
+      console.error('[ZATCA] afterSubmit error:', err?.message || err);
+    }
+  }
 
   async getPosting() {
     const exchangeRate = this.exchangeRate ?? 1;
@@ -103,9 +199,8 @@ export class SalesInvoice extends Invoice {
 
       if ((value as number) > (partyDoc?.loyaltyPoints || 0)) {
         throw new ValidationError(
-          t`${this.party as string} only has ${
-            partyDoc.loyaltyPoints as number
-          } points`
+          t`${this.party as string} only has ${partyDoc.loyaltyPoints as number
+            } points`
         );
       }
 
@@ -161,6 +256,7 @@ export class SalesInvoice extends Invoice {
       columns: [
         'name',
         getTransactionStatusColumn(),
+        getZatcaStatusColumn(),
         'party',
         'date',
         'baseGrandTotal',

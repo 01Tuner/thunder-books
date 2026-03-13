@@ -222,6 +222,43 @@ const ipc = {
     ipcRenderer.on(IPC_CHANNELS.CONSOLE_LOG, listener);
   },
 
+  async zatcaProcess(
+    invoiceData: Record<string, unknown>,
+    settingsData: Record<string, unknown>
+  ) {
+    return (await ipcRenderer.invoke(
+      IPC_ACTIONS.ZATCA_PROCESS,
+      invoiceData,
+      settingsData
+    )) as BackendResponse;
+  },
+
+  async zatcaGenerateCSR(settingsData: Record<string, unknown>) {
+    return (await ipcRenderer.invoke(
+      IPC_ACTIONS.ZATCA_GENERATE_CSR,
+      settingsData
+    )) as BackendResponse;
+  },
+
+  async zatcaIssueCert(settingsData: Record<string, unknown>, otp: string) {
+    return (await ipcRenderer.invoke(
+      IPC_ACTIONS.ZATCA_ISSUE_CERT,
+      settingsData,
+      otp
+    )) as BackendResponse;
+  },
+
+  async zatcaIssueProductionCert(
+    settingsData: Record<string, unknown>,
+    complianceRequestId: string
+  ) {
+    return (await ipcRenderer.invoke(
+      IPC_ACTIONS.ZATCA_ISSUE_PRODUCTION_CERT,
+      settingsData,
+      complianceRequestId
+    )) as BackendResponse;
+  },
+
   db: {
     async getSchema() {
       return (await ipcRenderer.invoke(

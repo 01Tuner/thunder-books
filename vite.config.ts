@@ -35,6 +35,8 @@ export default () => {
         reports: path.resolve(__dirname, './reports'),
         dummy: path.resolve(__dirname, './dummy'),
         fixtures: path.resolve(__dirname, './fixtures'),
+        'zatca-xml-js': path.resolve(__dirname, './dummy/zatca-xml-js.ts'),
+        crypto: path.resolve(__dirname, './dummy/crypto.ts'),
       },
     },
   });

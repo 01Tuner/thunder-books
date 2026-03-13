@@ -1,0 +1,68 @@
+{
+    "name": "ZATCASettings",
+    "label": "ZATCA Settings",
+    "isSingle": true,
+    "isChild": false,
+    "isSubmittable": false,
+    "fields": [
+        {
+            "label": "Seller Name",
+            "fieldname": "sellerName",
+            "fieldtype": "Data",
+            "required": true,
+            "section": "Phase 1"
+        },
+        {
+            "label": "VAT Registration Number",
+            "fieldname": "vatNumber",
+            "fieldtype": "Data",
+            "required": true,
+            "section": "Phase 1"
+        },
+        {
+            "label": "Environment",
+            "fieldname": "environment",
+            "fieldtype": "Select",
+            "options": [
+                {
+                    "value": "Sandbox",
+                    "label": "Sandbox"
+                },
+                {
+                    "value": "Simulation",
+                    "label": "Simulation"
+                },
+                {
+                    "value": "Production",
+                    "label": "Production"
+                }
+            ],
+            "default": "Sandbox",
+            "required": true,
+            "section": "Phase 1"
+        },
+        {
+            "label": "API Client ID (CSID)",
+            "fieldname": "clientId",
+            "fieldtype": "Data",
+            "section": "Phase 2"
+        },
+        {
+            "label": "API Client Secret",
+            "fieldname": "clientSecret",
+            "fieldtype": "Data",
+            "section": "Phase 2"
+        },
+        {
+            "label": "Private Key",
+            "fieldname": "privateKey",
+            "fieldtype": "Text",
+            "section": "Phase 2"
+        }
+    ],
+    "quickEditFields": [
+        "sellerName",
+        "vatNumber",
+        "environment"
+    ]
+}
