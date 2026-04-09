@@ -72,14 +72,37 @@ function toPrivateKeyPEM(keyOrPem: string): string {
 }
 
 /**
- * Converts a CSID from ZATCA/Frappe into a PEM certificate.
- * The CSID stored in Frappe is the raw base64 body of an X.509 DER certificate.
- * It must be wrapped in PEM headers AS-IS — do NOT decode it first.
+ * Converts a stored CSID into a PEM certificate string for the signing library.
+ *
+ * ZATCA's `binarySecurityToken` is base64(PEM_body), i.e. it encodes the
+ * already-base64 body of the DER certificate — not the raw DER bytes.
+ * We must decode it once to obtain the PEM body (e.g. "MIIC5D...") before
+ * wrapping in headers; using the raw token as the body yields the wrong bytes
+ * for ASN.1 parsing (WRONG_TAG).
+ *
+ * Handles three forms that may be in storage:
+ *   1. Already a full PEM string (-----BEGIN CERTIFICATE-----)
+ *   2. binarySecurityToken = base64(PEM_body)  ← ZATCA API response
+ *   3. Raw PEM body (MIIC…) stored directly
  */
 function toCertificatePEM(csidOrPem: string): string {
-    if (csidOrPem.includes('-----BEGIN')) return csidOrPem; // already PEM
-    // Strip any whitespace/newlines, then re-chunk into 64-char lines per PEM spec
-    const body = csidOrPem.replace(/\s/g, '').match(/.{1,64}/g)?.join('\n') ?? csidOrPem;
+    const trimmed = csidOrPem.trim();
+    if (trimmed.includes('-----BEGIN')) return trimmed;
+
+    const cleaned = trimmed.replace(/\s/g, '');
+
+    // Attempt to base64-decode the token; if the result is printable ASCII
+    // (i.e. it looks like a PEM body), use it — this is the binarySecurityToken case.
+    try {
+        const decoded = Buffer.from(cleaned, 'base64').toString('utf8');
+        if (/^[A-Za-z0-9+/=\r\n]+$/.test(decoded) && decoded.length > 64) {
+            const body = decoded.replace(/\s/g, '').match(/.{1,64}/g)?.join('\n') ?? decoded;
+            return `-----BEGIN CERTIFICATE-----\n${body}\n-----END CERTIFICATE-----`;
+        }
+    } catch { /* fall through */ }
+
+    // Fallback: treat as raw PEM body already
+    const body = cleaned.match(/.{1,64}/g)?.join('\n') ?? cleaned;
     return `-----BEGIN CERTIFICATE-----\n${body}\n-----END CERTIFICATE-----`;
 }
 
@@ -145,10 +168,10 @@ export async function processZatcaPhase2FromIPC(
     let privateKeyBody: string | undefined;
     if (privateKey) {
         if (privateKey.includes('-----BEGIN EC PRIVATE KEY-----')) {
-            privateKeyBody = privateKey
-                .replace('-----BEGIN EC PRIVATE KEY-----', '')
-                .replace('-----END EC PRIVATE KEY-----', '')
-                .replace(/\s/g, '');
+            // Use regex to extract ONLY the body between the EC PRIVATE KEY headers.
+            // Simple string replace would leave EC PARAMETERS block content before the key body.
+            const match = privateKey.match(/-----BEGIN EC PRIVATE KEY-----\s*([\s\S]+?)\s*-----END EC PRIVATE KEY-----/);
+            privateKeyBody = match ? match[1].replace(/\s/g, '') : privateKey.replace(/\s/g, '');
         } else if (privateKey.includes('-----BEGIN')) {
             // PKCS8 or other — convert to SEC1 first
             const crypto = require('crypto');
@@ -178,39 +201,29 @@ export async function processZatcaPhase2FromIPC(
         uuid: (invoiceData.zatca_uuid as string) || require('crypto').randomUUID(),
         custom_id: (settingsData.sellerName as string) || "EGS1-12345",
         model: "Desktop",
-        CRN_number: "454634645645654",
+        CRN_number: (settingsData.crnNumber as string) || "1234567890",
         VAT_name: (settingsData.sellerName as string) || "Unknown Seller",
         VAT_number: (settingsData.vatNumber as string) || "300000000000003",
         location: {
-            city: "Riyadh",
+            city: (settingsData.city as string) || "Riyadh",
             city_subdivision: "Default",
-            street: "Default",
+            street: (settingsData.street as string) || "Default",
             plot_identification: "0000",
             building: "0000",
-            postal_zone: "12345"
+            postal_zone: (settingsData.postalZone as string) || "12345"
         },
-        branch_name: "Head Office",
-        branch_industry: "Retail",
+        branch_name: (settingsData.branchName as string) || "Head Office",
+        branch_industry: (settingsData.branchIndustry as string) || "Retail",
         // private_key must be a PEM string — library strips headers internally
         private_key: privateKey ? toPrivateKeyPEM(privateKey) : undefined,
         compliance_certificate: csid ? toCertificatePEM(csid) : undefined,
     };
 
-    // Determine previous invoice hash from DB
-    let prevHash = INITIAL_HASH;
-    try {
-        const lastInvoices = await databaseManager.call('getAll', 'SalesInvoice', {
-            fields: ['name', 'zatca_hash'],
-            filters: { submitted: true },
-            orderBy: 'creation',
-            order: 'desc',
-            limit: 2
-        });
-        const validPrev = (lastInvoices || []).find((v: any) => v.name !== invoiceData.name);
-        if (validPrev && validPrev.zatca_hash) {
-            prevHash = validPrev.zatca_hash;
-        }
-    } catch { /* use default */ }
+    // Determine previous invoice hash from Settings (Serial Locking)
+    const prevHash = (settingsData.lastInvoiceHash as string) || INITIAL_HASH;
+    // Ensure arithmetic addition even if DB returns a string (e.g. "1" + 1 = "11" otherwise)
+    const nextCounter = (Number(settingsData.lastInvoiceCounter) || 0) + 1;
+    const icvUUID = (invoiceData.zatca_uuid as string) || require('crypto').randomUUID();
 
     const items = (invoiceData.items as any[]) || [];
     const line_items = items.map((item: any, index: number) => ({
@@ -226,10 +239,13 @@ export async function processZatcaPhase2FromIPC(
     }));
 
     const invoiceDate = new Date((invoiceData.date as string) || Date.now());
+    egsunit.uuid = icvUUID;
+
     const zatcaInvoice = new ZATCASimplifiedTaxInvoice({
         props: {
             egs_info: egsunit,
-            invoice_counter_number: 1,
+            // BR-KSA-34: ICV (KSA-16) must contain only digits — pass the sequential integer counter
+            invoice_counter_number: nextCounter,
             invoice_serial_number: (invoiceData.name as string) || "INV-1",
             issue_date: invoiceDate.toISOString().split('T')[0],
             issue_time: invoiceDate.toISOString().split('T')[1].substring(0, 8),
@@ -250,37 +266,90 @@ export async function processZatcaPhase2FromIPC(
         // @ts-ignore
         if (egs.api) egs.api.baseURL = baseURL;
 
-        if (!privateKey || !csid) {
-            // Dev/test mode: generate fresh keys and get compliance cert from ZATCA sandbox
-            console.log('[ZATCA] No stored keys, generating new keys and requesting compliance cert from ZATCA sandbox...');
-            await egs.generateNewKeysAndCSR(false, "thunder_books");
-            await egs.issueComplianceCertificate("123345");
+        if (!privateKey?.trim() || !csid?.trim()) {
+            throw new Error(
+                'Missing ZATCA Phase 2 credentials. Open Setup → ZATCA and finish onboarding (private key and CSID).'
+            );
         }
 
         const { signed_invoice_string, invoice_hash, qr } = egs.signInvoice(zatcaInvoice);
-        console.log('[ZATCA] Invoice signed successfully, QR length:', qr?.length);
+        console.log('[ZATCA] Invoice signed locally, QR TLV length:', qr?.length);
 
         // Convert raw TLV base64 to QR Code image data URL
         let qrImageData = qr;
         try {
             const dataUrl = await QRCode.toDataURL(qr);
-            // Strip "data:image/png;base64," to keep only the raw base64 as expected by the templates
             qrImageData = dataUrl.replace('data:image/png;base64,', '');
             console.log('[ZATCA] QR image generated successfully');
         } catch (e) {
             console.error('[ZATCA] QR code generation failed:', e);
         }
 
+        // ── Report / validate with the actual Fatoora API ──────────────────
+        let zatcaStatus = 'Reported';
+        let fatooraResponse: FatooraReportResult | null = null;
+
+        try {
+            fatooraResponse = await reportInvoiceToFatoora(
+                signed_invoice_string,
+                invoice_hash,
+                egsunit.uuid as string,
+                csid,
+                (settingsData.clientSecret as string) ?? '',
+                environment
+            );
+
+            console.log('');
+            console.log('┌─── ZATCA Fatoora API Response ───────────────────────────────');
+            console.log('│ Endpoint env  :', environment);
+            console.log('│ Status        :', fatooraResponse.status);
+            console.log('│ Reporting     :', fatooraResponse.reportingStatus || '(none)');
+            if (fatooraResponse.warningMessages.length > 0) {
+                console.log('│ Warnings      :');
+                fatooraResponse.warningMessages.forEach(w =>
+                    console.log(`│   [${w.code}] ${w.category} — ${w.message}`)
+                );
+            }
+            if (fatooraResponse.errorMessages.length > 0) {
+                console.log('│ Errors        :');
+                fatooraResponse.errorMessages.forEach(e =>
+                    console.log(`│   [${e.code}] ${e.category} — ${e.message}`)
+                );
+            }
+            console.log('│ Full response :', JSON.stringify(fatooraResponse.raw, null, 2).split('\n').map(l => '│   ' + l).join('\n'));
+            console.log('└──────────────────────────────────────────────────────────────');
+            console.log('');
+
+            // Use the raw status from ZATCA — reportingStatus takes priority,
+            // fall back to validationResults.status if not present.
+            zatcaStatus = fatooraResponse.reportingStatus || fatooraResponse.status || 'REPORTED';
+        } catch (reportErr: unknown) {
+            // Reporting failure must not block the invoice from being saved —
+            // the invoice is already cryptographically stamped.
+            const reportErrMsg = reportErr instanceof Error ? reportErr.message : String(reportErr);
+            console.error('[ZATCA] Fatoora reporting call failed:', reportErrMsg);
+            console.warn('[ZATCA] Invoice was signed locally but could not be confirmed by Fatoora.');
+            zatcaStatus = 'ERROR';
+        }
+
         return {
             zatca_xml: signed_invoice_string,
             zatca_hash: invoice_hash,
             zatca_qr: qrImageData,
-            zatca_uuid: egsunit.uuid,
-            zatca_status: 'REPORTED',
+            zatca_uuid: egsunit.uuid as string,
+            zatca_status: zatcaStatus,
+            zatca_counter: nextCounter,
+            zatca_api_response: fatooraResponse ? {
+                status: fatooraResponse.status,
+                reportingStatus: fatooraResponse.reportingStatus,
+                warningMessages: fatooraResponse.warningMessages,
+                errorMessages: fatooraResponse.errorMessages,
+                raw: fatooraResponse.raw,
+            } : null,
         };
-    } catch (err: any) {
-        const msg = err?.message || String(err);
-        console.error("ZATCA Phase 2 Error:", msg);
+    } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.error('ZATCA Phase 2 Error:', msg);
         // Re-throw so the IPC handler can capture and return it as resp.error
         throw new Error(`ZATCA Phase 2: ${msg}`);
     }
@@ -306,9 +375,18 @@ export async function processZatcaPhase2(invoice: SalesInvoice, settings: ZATCAS
     const settingsData: Record<string, unknown> = {
         sellerName: settings.sellerName,
         vatNumber: settings.vatNumber,
+        crnNumber: (settings as any).crnNumber,
+        city: (settings as any).city,
+        street: (settings as any).street,
+        postalZone: (settings as any).postalZone,
+        branchName: (settings as any).branchName,
+        branchIndustry: (settings as any).branchIndustry,
+        environment: settings.environment,
         privateKey: (settings as any).privateKey,
         clientId: (settings as any).clientId,
         clientSecret: (settings as any).clientSecret,
+        lastInvoiceCounter: settings.lastInvoiceCounter,
+        lastInvoiceHash: settings.lastInvoiceHash,
     };
 
     const mockDm = {
@@ -327,146 +405,246 @@ export async function processZatcaPhase2(invoice: SalesInvoice, settings: ZATCAS
     invoice.zatca_status = result.zatca_status as string;
 }
 
+interface FatooraReportResult {
+    /** Top-level status returned by ZATCA: PASS | WARNING | ERROR */
+    status: string;
+    /** reportingStatus or clearanceStatus field from the response */
+    reportingStatus: string;
+    warningMessages: Array<{ type: string; code: string; category: string; message: string }>;
+    errorMessages:   Array<{ type: string; code: string; category: string; message: string }>;
+    /** Raw JSON response from ZATCA (for logging) */
+    raw: Record<string, unknown>;
+}
+
+/**
+ * Sends a locally-signed simplified invoice to the Fatoora portal.
+ *
+ * - Sandbox  → POST /compliance/invoices   (compliance validation, no live reporting)
+ * - Simulation / Production → POST /invoices/reporting/single
+ *
+ * Auth: Basic base64("<binarySecurityToken>:<secret>")
+ * The binarySecurityToken stored in clientId is used directly (not re-encoded).
+ */
+async function reportInvoiceToFatoora(
+    signedXML: string,
+    invoiceHash: string,
+    invoiceUUID: string,
+    clientId: string,
+    clientSecret: string,
+    environment: string
+): Promise<FatooraReportResult> {
+    const baseURL = getFatooraBaseURL(environment);
+    const isSandbox = environment === 'Sandbox';
+
+    const endpoint = isSandbox
+        ? `${baseURL}/compliance/invoices`
+        : `${baseURL}/invoices/reporting/single`;
+
+    const basicAuth = Buffer.from(`${clientId}:${clientSecret}`).toString('base64');
+
+    const body: Record<string, string> = {
+        invoiceHash: invoiceHash,
+        uuid: invoiceUUID,
+        invoice: Buffer.from(signedXML).toString('base64'),
+    };
+
+    const headers: Record<string, string> = {
+        'Content-Type': 'application/json',
+        'Accept-Version': 'V2',
+        'Accept-Language': 'en',
+        'Authorization': `Basic ${basicAuth}`,
+    };
+
+    // Simplified invoices use reporting (not clearance), Clearance-Status: 0
+    if (!isSandbox) {
+        headers['Clearance-Status'] = '0';
+    }
+
+    console.log(`[ZATCA] Reporting to Fatoora → ${endpoint}`);
+
+    const nodeFetch = require('node-fetch') as typeof fetch;
+    const res = await nodeFetch(endpoint, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(body),
+    });
+
+    let raw: Record<string, unknown> = {};
+    try {
+        raw = await res.json() as Record<string, unknown>;
+    } catch {
+        const text = await res.text().catch(() => '');
+        raw = { _raw: text };
+    }
+
+    const validation = (raw.validationResults ?? {}) as Record<string, unknown>;
+    const status: string         = (validation.status as string) ?? (res.ok ? 'PASS' : 'ERROR');
+    const reportingStatus: string = (raw.reportingStatus as string) ?? (raw.clearanceStatus as string) ?? '';
+    const warningMessages        = (validation.warningMessages as FatooraReportResult['warningMessages']) ?? [];
+    const errorMessages          = (validation.errorMessages   as FatooraReportResult['errorMessages'])   ?? [];
+
+    if (!res.ok && errorMessages.length === 0) {
+        errorMessages.push({
+            type: 'ERROR',
+            code: String(res.status),
+            category: 'HTTP',
+            message: `HTTP ${res.status} from Fatoora`,
+        });
+    }
+
+    return { status, reportingStatus, warningMessages, errorMessages, raw };
+}
+
+/** Returns the correct Fatoora base URL for an environment. */
+function getFatooraBaseURL(environment: string): string {
+    if (environment === 'Production') return 'https://gw-fatoora.zatca.gov.sa/e-invoicing/core';
+    if (environment === 'Simulation') return 'https://gw-fatoora.zatca.gov.sa/e-invoicing/simulation';
+    // Sandbox / default
+    return 'https://gw-fatoora.zatca.gov.sa/e-invoicing/developer-portal';
+}
+
+/**
+ * Direct HTTP call to the Fatoora API — bypasses zatca-xml-js's
+ * internal API client which still points to the old gw-apic-gov.gazt.gov.sa hostname.
+ */
+async function fatooraPost(
+    url: string,
+    body: Record<string, unknown>,
+    extraHeaders: Record<string, string> = {}
+): Promise<any> {
+    const nodeFetch = require('node-fetch') as typeof fetch;
+    const res = await nodeFetch(url, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'Accept-Version': 'V2',
+            ...extraHeaders,
+        },
+        body: JSON.stringify(body),
+    });
+
+    let text: string;
+    try {
+        text = await res.text();
+    } catch {
+        text = '';
+    }
+
+    if (!res.ok) {
+        throw new Error(
+            `ZATCA API ${res.status} at ${url}: ${text.slice(0, 300)}`
+        );
+    }
+
+    try {
+        return JSON.parse(text);
+    } catch {
+        return text;
+    }
+}
+
 export async function generateZatcaCSR(settingsData: Record<string, unknown>): Promise<{ csr: string, privateKey: string }> {
     const egsunit: any = {
         uuid: require('crypto').randomUUID(),
         custom_id: (settingsData.sellerName as string) || "EGS1-12345",
         model: "Desktop",
-        CRN_number: "454634645645654",
+        CRN_number: (settingsData.crnNumber as string) || "1234567890",
         VAT_name: (settingsData.sellerName as string) || "Unknown Seller",
         VAT_number: (settingsData.vatNumber as string) || "300000000000003",
         location: {
-            city: "Riyadh",
+            city: (settingsData.city as string) || "Riyadh",
             city_subdivision: "Default",
-            street: "Default",
+            street: (settingsData.street as string) || "Default",
             plot_identification: "0000",
             building: "0000",
-            postal_zone: "12345"
+            postal_zone: (settingsData.postalZone as string) || "12345"
         },
-        branch_name: "Head Office",
-        branch_industry: "Retail",
+        branch_name: (settingsData.branchName as string) || "Head Office",
+        branch_industry: (settingsData.branchIndustry as string) || "Retail",
     };
 
     const egs = new EGS(egsunit as any);
     const isProduction = settingsData.environment === 'Production';
-    
-    // Set baseURL based on environment
-    const environment = (settingsData.environment as string) || 'Sandbox';
-    let baseURL = "https://gw-fatoora.zatca.gov.sa/e-invoicing/developer-portal";
-    if (environment === 'Production') baseURL = "https://gw-fatoora.zatca.gov.sa/e-invoicing/core";
-    else if (environment === 'Simulation') baseURL = "https://gw-fatoora.zatca.gov.sa/e-invoicing/simulation";
-    
-    // @ts-ignore
-    if (egs.api) egs.api.baseURL = baseURL;
 
     await egs.generateNewKeysAndCSR(isProduction, "thunder_books");
-    
+
     const info = egs.get();
-    return { 
-        csr: info.csr as string, 
-        privateKey: info.private_key as string 
+    return {
+        csr: info.csr as string,
+        privateKey: info.private_key as string
     };
 }
 
+/**
+ * Issues a compliance CSID from the Fatoora portal using the provided OTP.
+ * Makes a direct HTTP call so the correct hostname is always used regardless
+ * of what the zatca-xml-js library has hardcoded internally.
+ */
 export async function issueZatcaCertificate(
     settingsData: Record<string, unknown>,
     otp: string
-): Promise<any> {
-    const privateKey = settingsData.privateKey as string;
-    const csr = settingsData.csr as string;
+): Promise<{ clientId: string; clientSecret: string; complianceRequestId: string }> {
+    const csr = (settingsData.csr as string)?.trim();
+    if (!csr) throw new Error('No CSR found in settings — generate device keys first.');
 
-    const egsunit: any = {
-        uuid: require('crypto').randomUUID(),
-        custom_id: (settingsData.sellerName as string) || "EGS1-12345",
-        model: "Desktop",
-        CRN_number: "454634645645654",
-        VAT_name: (settingsData.sellerName as string) || "Unknown Seller",
-        VAT_number: (settingsData.vatNumber as string) || "300000000000003",
-        location: {
-            city: "Riyadh",
-            city_subdivision: "Default",
-            street: "Default",
-            plot_identification: "0000",
-            building: "0000",
-            postal_zone: "12345"
-        },
-        branch_name: "Head Office",
-        branch_industry: "Retail",
-    };
-
-    const egs = new EGS(egsunit as any);
-    
-    // Set baseURL based on environment
     const environment = (settingsData.environment as string) || 'Sandbox';
-    let baseURL = "https://gw-fatoora.zatca.gov.sa/e-invoicing/developer-portal";
-    if (environment === 'Production') baseURL = "https://gw-fatoora.zatca.gov.sa/e-invoicing/core";
-    else if (environment === 'Simulation') baseURL = "https://gw-fatoora.zatca.gov.sa/e-invoicing/simulation";
-    
-    // @ts-ignore
-    if (egs.api) egs.api.baseURL = baseURL;
+    const baseURL = getFatooraBaseURL(environment);
 
-    egs.set({
-        private_key: privateKey,
-        csr: csr
-    });
+    const csrBase64 = Buffer.from(csr).toString('base64');
+    const data = await fatooraPost(
+        `${baseURL}/compliance`,
+        { csr: csrBase64 },
+        { OTP: otp }
+    );
 
-    const res = await egs.issueComplianceCertificate(otp);
-    
-    const info = egs.get();
+    // binarySecurityToken is the base64-encoded DER cert body — store it as-is
+    // so toCertificatePEM() in processZatcaPhase2FromIPC can wrap it correctly.
+    const token: string = data.binarySecurityToken;
+    const secret: string = data.secret;
+    const requestID: string = String(data.requestID ?? '');
+
+    if (!token) throw new Error('ZATCA response missing binarySecurityToken.');
+
     return {
-        clientId: info.compliance_certificate as string,
-        clientSecret: info.compliance_api_secret as string,
-        complianceRequestId: res, // issueComplianceCertificate returns request_id
+        clientId: token,
+        clientSecret: secret,
+        complianceRequestId: requestID,
     };
 }
 
+/**
+ * Issues a production CSID once the solution has been approved for go-live.
+ */
 export async function issueZatcaProductionCertificate(
     settingsData: Record<string, unknown>,
     complianceRequestId: string
-): Promise<any> {
-    const privateKey = settingsData.privateKey as string;
-    const csr = settingsData.csr as string;
+): Promise<{ clientId: string; clientSecret: string }> {
+    const complianceCert = (settingsData.clientId as string)?.trim();
+    const complianceSecret = (settingsData.clientSecret as string)?.trim();
+    if (!complianceCert || !complianceSecret) {
+        throw new Error('Compliance CSID / secret not found — complete the compliance step first.');
+    }
+    if (!complianceRequestId?.trim()) {
+        throw new Error('Compliance request ID is missing — cannot request production CSID.');
+    }
 
-    const egsunit: any = {
-        uuid: require('crypto').randomUUID(),
-        custom_id: (settingsData.sellerName as string) || "EGS1-12345",
-        model: "Desktop",
-        CRN_number: "454634645645654",
-        VAT_name: (settingsData.sellerName as string) || "Unknown Seller",
-        VAT_number: (settingsData.vatNumber as string) || "300000000000003",
-        location: {
-            city: "Riyadh",
-            city_subdivision: "Default",
-            street: "Default",
-            plot_identification: "0000",
-            building: "0000",
-            postal_zone: "12345"
-        },
-        branch_name: "Head Office",
-        branch_industry: "Retail",
-    };
-
-    const egs = new EGS(egsunit as any);
-    
-    // Set baseURL based on environment
     const environment = (settingsData.environment as string) || 'Sandbox';
-    let baseURL = "https://gw-fatoora.zatca.gov.sa/e-invoicing/developer-portal";
-    if (environment === 'Production') baseURL = "https://gw-fatoora.zatca.gov.sa/e-invoicing/core";
-    else if (environment === 'Simulation') baseURL = "https://gw-fatoora.zatca.gov.sa/e-invoicing/simulation";
-    
-    // @ts-ignore
-    if (egs.api) egs.api.baseURL = baseURL;
+    const baseURL = getFatooraBaseURL(environment);
 
-    egs.set({
-        private_key: privateKey,
-        csr: csr
-    });
+    // Basic auth: base64("<binarySecurityToken>:<secret>")
+    const basicAuth = Buffer.from(`${complianceCert}:${complianceSecret}`).toString('base64');
 
-    await egs.issueProductionCertificate(complianceRequestId);
-    
-    const info = egs.get();
+    const data = await fatooraPost(
+        `${baseURL}/production/csids`,
+        { compliance_request_id: complianceRequestId },
+        { Authorization: `Basic ${basicAuth}` }
+    );
+
+    const token: string = data.binarySecurityToken;
+    if (!token) throw new Error('ZATCA response missing binarySecurityToken.');
+
     return {
-        clientId: info.production_certificate as string,
-        clientSecret: info.production_api_secret as string,
+        clientId: token,
+        clientSecret: data.secret as string,
     };
 }

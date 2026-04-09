@@ -29,6 +29,7 @@ import {
 import { saveHtmlAsPdf } from './saveHtmlAsPdf';
 import { sendAPIRequest } from './api';
 import { initScheduler } from './initSheduler';
+import { ZatcaLock } from './lock';
 
 export default function registerIpcMainActionListeners(main: Main) {
   ipcMain.handle(IPC_ACTIONS.CHECK_DB_ACCESS, async (_, filePath: string) => {
@@ -310,10 +311,41 @@ export default function registerIpcMainActionListeners(main: Main) {
   ipcMain.handle(
     IPC_ACTIONS.ZATCA_PROCESS,
     async (_, invoiceData: Record<string, unknown>, settingsData: Record<string, unknown>) => {
-      return await getErrorHandledReponse(async () => {
-        const { processZatcaPhase2FromIPC } = await import('../utils/zatcaPhase2');
-        return await processZatcaPhase2FromIPC(invoiceData, settingsData, databaseManager);
-      });
+      // Serial locking for ZATCA Phase 2 signature to ensure ICV and PIH integrity
+      const release = await ZatcaLock.acquire();
+      try {
+        return await getErrorHandledReponse(async () => {
+          // 1. Fetch latest ZATCA Settings from DB to get the most recent counter and hash
+          const currentSettings = await databaseManager.call('get', 'ZATCASettings') as Record<string, unknown>;
+          
+          // Merge with passed settingsData (which might contain session-specific keys like OTP/CSR)
+          const mergedSettings = { ...settingsData, ...currentSettings };
+
+          const { processZatcaPhase2FromIPC } = await import('../utils/zatcaPhase2');
+          const result = await processZatcaPhase2FromIPC(invoiceData, mergedSettings, databaseManager);
+
+          if (result && !result.error) {
+            // 2. Persist the new sequence state immediately
+            await databaseManager.call('update', 'ZATCASettings', {
+              lastInvoiceCounter: result.zatca_counter,
+              lastInvoiceHash: result.zatca_hash,
+            });
+
+            console.log('[ZATCA Phase 2] ✓ Invoice signed successfully');
+            console.log('[ZATCA Phase 2] Invoice name :', invoiceData.name);
+            console.log('[ZATCA Phase 2] Counter      :', result.zatca_counter);
+            console.log('[ZATCA Phase 2] UUID         :', result.zatca_uuid);
+            console.log('[ZATCA Phase 2] Status       :', result.zatca_status);
+            console.log('[ZATCA Phase 2] Hash (base64):', String(result.zatca_hash).slice(0, 44) + '…');
+            console.log('[ZATCA Phase 2] QR length    :', String(result.zatca_qr ?? '').length, 'chars (base64 PNG)');
+            console.log('[ZATCA Phase 2] XML length   :', String(result.zatca_xml ?? '').length, 'chars');
+          }
+
+          return result;
+        });
+      } finally {
+        release();
+      }
     }
   );
 

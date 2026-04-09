@@ -355,10 +355,13 @@ export function getZatcaStatusColumn(): ColumnConfig {
       let color = 'gray';
       if (status === 'REPORTED') color = 'blue';
       if (status === 'CLEARED') color = 'green';
-      if (status === 'REJECTED') color = 'red';
+      if (status === 'PASS') color = 'green';
+      if (status === 'WARNING') color = 'orange';
+      if (status === 'NOT_CLEARED') color = 'orange';
+      if (status === 'ERROR') color = 'red';
 
       return {
-        template: `<Badge class="text-xs" color="${color}">${status || 'Not Sent'}</Badge>`,
+        template: `<Badge class="text-xs" color="${color}">${status || '—'}</Badge>`,
       };
     },
   };

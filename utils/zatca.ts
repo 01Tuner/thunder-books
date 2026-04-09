@@ -1,9 +1,10 @@
 export function getTLV(tag: number, value: string): Uint8Array {
-    const valueBuffer = Buffer.from(value, 'utf8');
-    return new Uint8Array(Buffer.concat([
-        Buffer.from([tag, valueBuffer.length]),
-        valueBuffer
-    ]));
+    const valueBytes = new TextEncoder().encode(value);
+    const result = new Uint8Array(2 + valueBytes.length);
+    result[0] = tag;
+    result[1] = valueBytes.length;
+    result.set(valueBytes, 2);
+    return result;
 }
 
 export function generateZatcaQr(
@@ -13,15 +14,26 @@ export function generateZatcaQr(
     invoiceTotal: string,
     vatTotal: string
 ): string {
-    const tlv1 = getTLV(1, sellerName);
-    const tlv2 = getTLV(2, vatNumber);
+    const tlvs = [
+        getTLV(1, sellerName),
+        getTLV(2, vatNumber),
+        getTLV(3, timestamp.toISOString()),
+        getTLV(4, invoiceTotal),
+        getTLV(5, vatTotal),
+    ];
 
-    // ZATCA expects timestamp in essentially ISO format or a specific timezone
-    // For safety, we use ISO string
-    const tlv3 = getTLV(3, timestamp.toISOString());
-    const tlv4 = getTLV(4, invoiceTotal);
-    const tlv5 = getTLV(5, vatTotal);
+    const totalLength = tlvs.reduce((n, t) => n + t.length, 0);
+    const merged = new Uint8Array(totalLength);
+    let offset = 0;
+    for (const tlv of tlvs) {
+        merged.set(tlv, offset);
+        offset += tlv.length;
+    }
 
-    const qrBuffer = Buffer.concat([tlv1, tlv2, tlv3, tlv4, tlv5]);
-    return qrBuffer.toString('base64');
+    // Browser-safe base64 — avoids Buffer which is Node-only
+    let binary = '';
+    for (let i = 0; i < merged.length; i++) {
+        binary += String.fromCharCode(merged[i]);
+    }
+    return btoa(binary);
 }

@@ -346,6 +346,8 @@ function getCompleteSidebar(): SidebarConfig {
           label: t`ZATCA`,
           name: 'zatca-onboarding',
           route: '/zatca-onboarding',
+          hidden: () =>
+            fyo.singles.AccountingSettings?.country !== 'Saudi Arabia',
         },
       ] as SidebarItem[],
     },

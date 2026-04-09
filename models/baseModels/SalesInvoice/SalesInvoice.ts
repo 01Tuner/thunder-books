@@ -9,6 +9,8 @@ import {
   getTransactionStatusColumn,
   getZatcaStatusColumn,
 } from '../../helpers';
+import { generateZatcaQr } from '../../../utils/zatca';
+import QRCode from 'qrcode';
 import { Invoice } from '../Invoice/Invoice';
 import { SalesInvoiceItem } from '../SalesInvoiceItem/SalesInvoiceItem';
 import { LoyaltyProgram } from '../LoyaltyProgram/LoyaltyProgram';
@@ -40,13 +42,62 @@ export class SalesInvoice extends Invoice {
       ModelNameEnum.ZATCASettings
     )) as ZATCASettings;
 
-    console.log('[ZATCA] settings sellerName:', zatcaSettings?.sellerName, 'vatNumber:', zatcaSettings?.vatNumber);
-
-    if (!(zatcaSettings && zatcaSettings.sellerName && zatcaSettings.vatNumber)) {
-      console.warn('[ZATCA] Skipping: ZATCA settings incomplete');
+    if (!zatcaSettings?.zatcaEnabled) {
+      console.log('[ZATCA] Skipping: ZATCA not enabled');
       return;
     }
 
+    if (!zatcaSettings.sellerName || !zatcaSettings.vatNumber) {
+      console.warn('[ZATCA] Skipping: ZATCA common settings incomplete (sellerName/vatNumber)');
+      return;
+    }
+
+    const phase = zatcaSettings.zatcaPhase || 'Phase 1';
+
+    if (phase === 'Phase 1') {
+      try {
+        console.log('[ZATCA] Processing Phase 1 (Simple QR)...');
+        const vatTotal = await this.getTotalTax();
+        
+        const rawTlv = generateZatcaQr(
+          zatcaSettings.sellerName,
+          zatcaSettings.vatNumber,
+          new Date(this.date as any),
+          this.baseGrandTotal!.float.toFixed(2),
+          vatTotal.float.toFixed(2)
+        );
+
+        const dataUrl = await QRCode.toDataURL(rawTlv);
+        const qrImageData = dataUrl.replace('data:image/png;base64,', '');
+
+        await this.fyo.db.update(ModelNameEnum.SalesInvoice, {
+          name: this.name as string,
+          zatca_qr: qrImageData,
+          zatca_status: 'REPORTED',
+        });
+
+        this.zatca_qr = qrImageData;
+        this.zatca_status = 'REPORTED';
+        console.log('[ZATCA] Phase 1 QR saved successfully');
+        const { showToast } = await import('src/utils/interactive');
+        showToast({
+          type: 'success',
+          message: t`ZATCA Phase 1: QR code added to this invoice.`,
+          duration: 'short',
+        });
+      } catch (err: any) {
+        console.error('[ZATCA] Phase 1 Error:', err?.message || err);
+        const { showToast } = await import('src/utils/interactive');
+        showToast({
+          type: 'error',
+          message: `${t`ZATCA Phase 1 failed`}: ${err?.message ?? err}`,
+          duration: 'long',
+        });
+      }
+      return;
+    }
+
+    // Phase 2 Logic
     const invoiceData: Record<string, unknown> = {
       name: this.name,
       date: this.date,
@@ -60,39 +111,62 @@ export class SalesInvoice extends Invoice {
       })),
     };
 
+    const privateKey = (zatcaSettings as any).privateKey as string | undefined;
+    const clientId = (zatcaSettings as any).clientId as string | undefined;
+
+    if (!privateKey?.trim() || !clientId?.trim()) {
+      const { showToast } = await import('src/utils/interactive');
+      showToast({
+        type: 'warning',
+        message: t`ZATCA Phase 2 is enabled but onboarding is incomplete. Open Setup → ZATCA to add keys and certificate.`,
+        duration: 'long',
+      });
+      return;
+    }
+
     const settingsData: Record<string, unknown> = {
       sellerName: zatcaSettings.sellerName,
       vatNumber: zatcaSettings.vatNumber,
-      privateKey: (zatcaSettings as any).privateKey,
-      clientId: (zatcaSettings as any).clientId,
+      crnNumber: zatcaSettings.crnNumber,
+      city: zatcaSettings.city,
+      street: zatcaSettings.street,
+      postalZone: zatcaSettings.postalZone,
+      branchName: zatcaSettings.branchName,
+      branchIndustry: zatcaSettings.branchIndustry,
+      environment: zatcaSettings.environment,
+      privateKey,
+      clientId,
       clientSecret: (zatcaSettings as any).clientSecret,
+      lastInvoiceCounter: zatcaSettings.lastInvoiceCounter,
+      lastInvoiceHash: zatcaSettings.lastInvoiceHash,
     };
-
-    console.log('[ZATCA] isElectron:', this.fyo.isElectron, 'ipc exists:', !!(window as any)?.ipc, 'zatcaProcess fn:', !!(window as any)?.ipc?.zatcaProcess);
 
     try {
       let result: Record<string, unknown> | null = null;
 
       if (this.fyo.isElectron && (window as any)?.ipc) {
-        // Run on the main (Node.js) process via IPC to access crypto modules
-        console.log('[ZATCA] Invoking zatcaProcess via IPC...');
+        console.log('[ZATCA] Invoking Phase 2 zatcaProcess via IPC...');
         const resp = await (window as any).ipc.zatcaProcess(invoiceData, settingsData);
-        console.log('[ZATCA] IPC response:', resp);
+        console.log('[ZATCA] Raw IPC response:', JSON.stringify(resp, null, 2));
         if (resp?.error) {
-          console.error('[ZATCA] IPC error from main process:', resp.error?.message || resp.error);
+          console.error('[ZATCA] IPC error:', resp.error?.message || resp.error);
+          const { showToast } = await import('src/utils/interactive');
+          showToast({
+            type: 'error',
+            message: `${t`ZATCA Phase 2 signing failed`}: ${resp.error?.message ?? resp.error}`,
+            duration: 'long',
+          });
         }
         if (resp?.data) {
           result = resp.data as Record<string, unknown>;
         }
       } else {
-        // Non-Electron / test context: run directly (requires Node.js env)
         const { processZatcaPhase2 } = await import('../../../utils/zatcaPhase2');
         await processZatcaPhase2(this, zatcaSettings, this.fyo);
         return;
       }
 
       if (result) {
-        // Persist ZATCA fields back to the already-submitted invoice record
         await this.fyo.db.update(ModelNameEnum.SalesInvoice, {
           name: this.name as string,
           zatca_xml: (result.zatca_xml as string) ?? null,
@@ -101,18 +175,54 @@ export class SalesInvoice extends Invoice {
           zatca_uuid: (result.zatca_uuid as string) ?? null,
           zatca_status: (result.zatca_status as string) ?? null,
         });
-        // Update in-memory values too
         this.zatca_xml = result.zatca_xml as string;
         this.zatca_hash = result.zatca_hash as string;
         this.zatca_qr = result.zatca_qr as string;
         this.zatca_uuid = result.zatca_uuid as string;
         this.zatca_status = result.zatca_status as string;
-        console.log('[ZATCA] Fields saved successfully. QR:', this.zatca_qr?.substring(0, 30));
-      } else {
-        console.warn('[ZATCA] IPC returned no data');
+
+        const apiResp = result.zatca_api_response as Record<string, unknown> | null;
+        console.log('[ZATCA] Phase 2 fields saved successfully');
+        console.log('[ZATCA] UUID    :', this.zatca_uuid);
+        console.log('[ZATCA] Status  :', this.zatca_status);
+        console.log('[ZATCA] Hash    :', this.zatca_hash?.slice(0, 44) + '…');
+        console.log('[ZATCA] QR bytes:', (this.zatca_qr?.length ?? 0), '(base64 PNG)');
+        console.log('[ZATCA] XML bytes:', (this.zatca_xml?.length ?? 0));
+        if (apiResp) {
+          console.log('[ZATCA] Fatoora API response:', JSON.stringify(apiResp, null, 2));
+        }
+
+        const { showToast } = await import('src/utils/interactive');
+        const isError = this.zatca_status === 'ERROR' || this.zatca_status === 'NOT_CLEARED';
+
+        // Build a detailed message from the actual API response
+        let toastMessage = `ZATCA: ${this.zatca_status}`;
+        if (apiResp) {
+          const errors = (apiResp.errorMessages as Array<{ code: string; message: string }>) ?? [];
+          const warnings = (apiResp.warningMessages as Array<{ code: string; message: string }>) ?? [];
+          const reportingStatus = apiResp.reportingStatus as string;
+          if (reportingStatus) toastMessage += ` (${reportingStatus})`;
+          if (errors.length > 0) {
+            toastMessage += ' — ' + errors.map((e) => `[${e.code}] ${e.message}`).join('; ');
+          } else if (warnings.length > 0) {
+            toastMessage += ' — ' + warnings.map((w) => `[${w.code}] ${w.message}`).join('; ');
+          }
+        }
+
+        showToast({
+          type: isError ? 'error' : 'success',
+          message: toastMessage,
+          duration: isError ? 'long' : 'short',
+        });
       }
     } catch (err: any) {
-      console.error('[ZATCA] afterSubmit error:', err?.message || err);
+      console.error('[ZATCA] Phase 2 Error:', err?.message || err);
+      const { showToast } = await import('src/utils/interactive');
+      showToast({
+        type: 'error',
+        message: `${t`ZATCA Phase 2 failed`}: ${err?.message ?? err}`,
+        duration: 'long',
+      });
     }
   }
 

@@ -6,18 +6,86 @@
     "isSubmittable": false,
     "fields": [
         {
+            "label": "ZATCA Enabled",
+            "fieldname": "zatcaEnabled",
+            "fieldtype": "Check",
+            "section": "General"
+        },
+        {
+            "label": "ZATCA Phase",
+            "fieldname": "zatcaPhase",
+            "fieldtype": "Select",
+            "options": [
+                {
+                    "value": "Phase 1",
+                    "label": "Phase 1 (Generation)"
+                },
+                {
+                    "value": "Phase 2",
+                    "label": "Phase 2 (Integration)"
+                }
+            ],
+            "default": "Phase 1",
+            "section": "General"
+        },
+        {
             "label": "Seller Name",
             "fieldname": "sellerName",
             "fieldtype": "Data",
             "required": true,
-            "section": "Phase 1"
+            "section": "Common Info"
         },
         {
             "label": "VAT Registration Number",
             "fieldname": "vatNumber",
             "fieldtype": "Data",
             "required": true,
-            "section": "Phase 1"
+            "section": "Common Info"
+        },
+        {
+            "label": "Commercial Registration Number (CRN)",
+            "fieldname": "crnNumber",
+            "fieldtype": "Data",
+            "section": "Common Info"
+        },
+        {
+            "label": "City",
+            "fieldname": "city",
+            "fieldtype": "Data",
+            "section": "Common Info"
+        },
+        {
+            "label": "Street",
+            "fieldname": "street",
+            "fieldtype": "Data",
+            "section": "Common Info"
+        },
+        {
+            "label": "Postal Zone",
+            "fieldname": "postalZone",
+            "fieldtype": "Data",
+            "section": "Common Info"
+        },
+        {
+            "label": "Branch Name",
+            "fieldname": "branchName",
+            "fieldtype": "Data",
+            "section": "Common Info"
+        },
+        {
+            "label": "Branch Industry",
+            "fieldname": "branchIndustry",
+            "fieldtype": "Select",
+            "options": [
+                { "value": "Retail", "label": "Retail" },
+                { "value": "Wholesale", "label": "Wholesale" },
+                { "value": "Manufacturing", "label": "Manufacturing" },
+                { "value": "Services", "label": "Services" },
+                { "value": "Construction", "label": "Construction" },
+                { "value": "Other", "label": "Other" }
+            ],
+            "default": "Retail",
+            "section": "Common Info"
         },
         {
             "label": "Environment",
@@ -39,25 +107,55 @@
             ],
             "default": "Sandbox",
             "required": true,
-            "section": "Phase 1"
+            "section": "Common Info"
         },
         {
             "label": "API Client ID (CSID)",
             "fieldname": "clientId",
             "fieldtype": "Data",
-            "section": "Phase 2"
+            "section": "Phase 2 Only"
         },
         {
             "label": "API Client Secret",
             "fieldname": "clientSecret",
             "fieldtype": "Data",
-            "section": "Phase 2"
+            "section": "Phase 2 Only"
         },
         {
             "label": "Private Key",
             "fieldname": "privateKey",
             "fieldtype": "Text",
-            "section": "Phase 2"
+            "section": "Phase 2 Only"
+        },
+        {
+            "label": "Certificate Signing Request (CSR)",
+            "fieldname": "csr",
+            "fieldtype": "Text",
+            "description": "Stored to resume onboarding after restarting the app.",
+            "section": "Phase 2 Only"
+        },
+        {
+            "label": "Compliance Request ID",
+            "fieldname": "complianceRequestId",
+            "fieldtype": "Data",
+            "description": "Needed to request the production CSID after compliance onboarding.",
+            "section": "Phase 2 Only"
+        },
+        {
+            "label": "Last Invoice Counter",
+            "fieldname": "lastInvoiceCounter",
+            "fieldtype": "Int",
+            "default": 0,
+            "readOnly": true,
+            "section": "Phase 2 Sequence"
+        },
+        {
+            "label": "Last Invoice Hash",
+            "fieldname": "lastInvoiceHash",
+            "fieldtype": "Data",
+            "default": "NWZlY2ViNjZmZmM4NmYzOGQ5NTI3ODZjNmQ2OTZjNzljMmRiYzIzOWRkNGU5MWI0NjcyOWQ3M2EyN2ZiNTdlOQ==",
+            "readOnly": true,
+            "section": "Phase 2 Sequence"
         }
     ],
     "quickEditFields": [
