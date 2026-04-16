@@ -98,10 +98,25 @@ export class SalesInvoice extends Invoice {
     }
 
     // Phase 2 Logic
+    let buyer_name = 'Walk-in Customer';
+    if (this.party) {
+      try {
+        const nm = (await this.fyo.getValue(
+          ModelNameEnum.Party,
+          this.party,
+          'name'
+        )) as string | undefined;
+        buyer_name = (nm && String(nm).trim()) || String(this.party);
+      } catch {
+        buyer_name = String(this.party);
+      }
+    }
+
     const invoiceData: Record<string, unknown> = {
       name: this.name,
       date: this.date,
       zatca_uuid: this.zatca_uuid,
+      buyer_name,
       items: (this.items || []).map((item) => ({
         name: item.name,
         item: (item as any).item,
@@ -182,6 +197,14 @@ export class SalesInvoice extends Invoice {
         this.zatca_status = result.zatca_status as string;
 
         const apiResp = result.zatca_api_response as Record<string, unknown> | null;
+        const fatooraSub = result.zatca_fatoora_submission as
+            | { url: string; requestBody: Record<string, string> }
+            | null
+            | undefined;
+        if (fatooraSub) {
+          console.log('[ZATCA] Invoice submission — URL:', fatooraSub.url);
+          console.log('[ZATCA] Invoice submission — request body:', fatooraSub.requestBody);
+        }
         console.log('[ZATCA] Phase 2 fields saved successfully');
         console.log('[ZATCA] UUID    :', this.zatca_uuid);
         console.log('[ZATCA] Status  :', this.zatca_status);
@@ -190,6 +213,10 @@ export class SalesInvoice extends Invoice {
         console.log('[ZATCA] XML bytes:', (this.zatca_xml?.length ?? 0));
         if (apiResp) {
           console.log('[ZATCA] Fatoora API response:', JSON.stringify(apiResp, null, 2));
+        }
+        const qrDebug = result.zatca_qr_debug as Record<string, unknown> | null | undefined;
+        if (qrDebug) {
+          console.log('[ZATCA] QR TLV diagnostics:', JSON.stringify(qrDebug, null, 2));
         }
 
         const { showToast } = await import('src/utils/interactive');
