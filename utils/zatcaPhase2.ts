@@ -376,13 +376,15 @@ async function patchZatcaSigning(privateKeyBase64Body: string) {
             issueDate == null ? '' : typeof issueDate === 'string' ? issueDate : String(issueDate);
         const issueTimeStr =
             issueTime == null ? '' : typeof issueTime === 'string' ? issueTime : String(issueTime);
-        const formattedDatetimeBase =
-            issueDateStr.trim() !== '' && issueTimeStr.trim() !== ''
-                ? `${issueDateStr.trim()}T${issueTimeStr.trim()}`
+        const d = issueDateStr.trim();
+        const t = issueTimeStr.trim();
+        // KSA-25 / QRCODE_VALIDATION: QR tag 3 must match BT-2 + BT-9 as in the XML. UBL IssueTime
+        // is typically a naive HH:mm:ss with no zone; appending "Z" made Fatoora report
+        // invoiceTimeStamp_QRCODE_INVALID (QR instant ≠ document issue time).
+        const formattedDatetime =
+            d !== '' && t !== ''
+                ? `${d}T${t}`
                 : moment(`${issueDate} ${issueTime}`).format('YYYY-MM-DDTHH:mm:ss');
-        const formattedDatetime = /(?:Z|[+-]\d{2}:\d{2})$/.test(formattedDatetimeBase)
-            ? formattedDatetimeBase
-            : `${formattedDatetimeBase}Z`;
 
         const sigB64Str =
             typeof digital_signature === 'string'
@@ -613,9 +615,9 @@ export async function processZatcaPhase2FromIPC(
         const { signed_invoice_string, invoice_hash, qr } = egs.signInvoice(zatcaInvoice);
         console.log('[ZATCA] Invoice signed locally, QR TLV length:', qr?.length);
 
-        // Dump the FINAL signed XML + raw QR TLV to disk so we can forensically
-        // diff against a known-good ZATCA sandbox submission when Fatoora keeps
-        // returning QRCODE_INVALID despite all internal checks passing.
+        /*
+        // Forensic dump: signed XML + QR sidecar under $TMPDIR/zatca-debug and ~/Desktop/zatca-debug-invoices
+        // (uncomment when you need offline ZATCA SDK validation files)
         try {
             // eslint-disable-next-line @typescript-eslint/no-var-requires
             const fs = require('fs') as typeof import('fs');
@@ -650,6 +652,7 @@ export async function processZatcaPhase2FromIPC(
         } catch (e) {
             console.warn('[ZATCA] Could not write forensic dump:', (e as Error).message);
         }
+        */
 
         // ── CRITICAL diagnostic: recompute the hash the way ZATCA will ──
         // ZATCA's validator takes our signed_invoice_string, strips
