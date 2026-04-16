@@ -49,10 +49,12 @@ function normalizeAndValidateZatcaCrn(crnInput: string | undefined | null): stri
 }
 
 /**
- * zatca-xml-js hardcodes InvoiceTypeCode @name="0211010" (summary + third-party + nominal per BR-KSA-06),
- * which triggers BR-KSA-71 / BR-KSA-F-13 with an empty AccountingCustomerParty.
- * We rewrite to B2C simplified "0200000" and inject a minimal buyer legal name, then re-parse so the
- * signed XML and Fatoora submission always match (object mutation alone can fail after some bundlers).
+ * zatca-xml-js seeds InvoiceTypeCode @name="0211010" (simplified family). We adjust BR-KSA-06 `name` and
+ * AccountingCustomerParty: Standard → 0100000 + buyer VAT; Simplified B2C → 0200000 + name only;
+ * Simplified B2B → keep 0211010 + buyer VAT.
+ *
+ * Line items / monetary totals still use ZATCASimplifiedTaxInvoice (same UBL shape as the library).
+ * Production standard invoices may require Fatoora clearance (not only reporting) — validate with ZATCA.
  */
 function escapeXmlText(s: string): string {
     return s
@@ -62,28 +64,85 @@ function escapeXmlText(s: string): string {
         .replace(/"/g, '&quot;');
 }
 
-function applyZatcaSimplifiedB2CXmlFixes(
+function parseZatcaInvoiceFormat(raw: unknown): 'Simplified' | 'Standard' {
+    return String(raw ?? 'Simplified').toLowerCase() === 'standard' ? 'Standard' : 'Simplified';
+}
+
+function applyZatcaInvoiceCustomerAndTypeFixes(
     zatcaInvoice: InstanceType<typeof ZATCASimplifiedTaxInvoice>,
-    buyerRegistrationName: string
+    opts: {
+        format: 'Simplified' | 'Standard';
+        simplifiedB2B: boolean;
+        buyerRegistrationName: string;
+        buyerVatDigits: string;
+    }
 ): void {
     // eslint-disable-next-line @typescript-eslint/no-var-requires
     const { XMLDocument } = require('zatca-xml-js/lib/parser') as {
         XMLDocument: new (xml: string) => { toString: (o: { no_header: boolean }) => string };
     };
     let xmlStr = zatcaInvoice.getXML().toString({ no_header: false });
-    xmlStr = xmlStr.replace(
-        /(<cbc:InvoiceTypeCode\s+)name="0211010"/,
-        '$1name="0200000"'
-    );
-    const buyer = escapeXmlText((buyerRegistrationName || '').trim() || 'Walk-in Customer');
-    const buyerBlock =
+    const buyer = escapeXmlText((opts.buyerRegistrationName || '').trim() || 'Walk-in Customer');
+
+    const fullBuyerBlock = (vatDigits: string) => {
+        const vat = escapeXmlText(vatDigits);
+        return (
+            `<cac:AccountingCustomerParty><cac:Party>` +
+            `<cac:PartyTaxScheme><cbc:CompanyID schemeID="VAT">${vat}</cbc:CompanyID>` +
+            `<cac:TaxScheme><cbc:ID>VAT</cbc:ID></cac:TaxScheme></cac:PartyTaxScheme>` +
+            `<cac:PartyLegalEntity><cbc:RegistrationName>${buyer}</cbc:RegistrationName></cac:PartyLegalEntity>` +
+            `</cac:Party></cac:AccountingCustomerParty>`
+        );
+    };
+    const minimalBuyerBlock =
         `<cac:AccountingCustomerParty><cac:Party><cac:PartyLegalEntity><cbc:RegistrationName>${buyer}</cbc:RegistrationName></cac:PartyLegalEntity></cac:Party></cac:AccountingCustomerParty>`;
-    xmlStr = xmlStr.replace(
-        /<cac:AccountingCustomerParty>\s*<\/cac:AccountingCustomerParty>/,
-        buyerBlock
-    );
+
+    if (opts.format === 'Standard') {
+        xmlStr = xmlStr.replace(
+            /(<cbc:InvoiceTypeCode\s+)name="0211010"/,
+            '$1name="0100000"'
+        );
+        xmlStr = xmlStr.replace(
+            /<cac:AccountingCustomerParty>\s*<\/cac:AccountingCustomerParty>/,
+            fullBuyerBlock(opts.buyerVatDigits)
+        );
+        // BT-31 seller VAT: add scheme when the template omits it (common on standard documents)
+        const supM = xmlStr.match(
+            /<cac:AccountingSupplierParty>[\s\S]*?<\/cac:AccountingSupplierParty>/
+        );
+        if (supM) {
+            let supXml = supM[0];
+            if (!/cbc:CompanyID\s+schemeID="VAT"/.test(supXml)) {
+                supXml = supXml.replace(
+                    /<cbc:CompanyID>([^<]*)<\/cbc:CompanyID>/,
+                    '<cbc:CompanyID schemeID="VAT">$1</cbc:CompanyID>'
+                );
+            }
+            xmlStr = xmlStr.replace(supM[0], supXml);
+        }
+    } else if (opts.simplifiedB2B) {
+        xmlStr = xmlStr.replace(
+            /<cac:AccountingCustomerParty>\s*<\/cac:AccountingCustomerParty>/,
+            fullBuyerBlock(opts.buyerVatDigits)
+        );
+    } else {
+        xmlStr = xmlStr.replace(
+            /(<cbc:InvoiceTypeCode\s+)name="0211010"/,
+            '$1name="0200000"'
+        );
+        xmlStr = xmlStr.replace(
+            /<cac:AccountingCustomerParty>\s*<\/cac:AccountingCustomerParty>/,
+            minimalBuyerBlock
+        );
+    }
+
     (zatcaInvoice as unknown as { invoice_xml: InstanceType<typeof XMLDocument> }).invoice_xml =
         new XMLDocument(xmlStr);
+}
+
+/** Saudi VAT registration: 15 digits, usually starting with 3. */
+function normalizeZatcaBuyerVat(v: string | undefined | null): string {
+    return String(v ?? '').replace(/\D/g, '');
 }
 
 /**
@@ -590,9 +649,26 @@ export async function processZatcaPhase2FromIPC(
             line_items: line_items
         }
     });
+    const format = parseZatcaInvoiceFormat(invoiceData.zatca_invoice_format);
+    const zatcaB2b = Boolean(invoiceData.zatca_b2b);
+    const buyerVatDigits = normalizeZatcaBuyerVat(invoiceData.buyer_vat as string | undefined);
+    const needsBuyerVat = format === 'Standard' || zatcaB2b;
+    if (needsBuyerVat && buyerVatDigits.length !== 15) {
+        throw new Error(
+            format === 'Standard'
+                ? 'ZATCA standard tax invoice requires a valid 15-digit customer VAT number (Tax ID on the customer).'
+                : 'ZATCA simplified B2B requires a valid 15-digit customer VAT number (Tax ID on the customer).'
+        );
+    }
+
     const buyerNameForZatca =
         (invoiceData.buyer_name as string | undefined)?.trim() || 'Walk-in Customer';
-    applyZatcaSimplifiedB2CXmlFixes(zatcaInvoice, buyerNameForZatca);
+    applyZatcaInvoiceCustomerAndTypeFixes(zatcaInvoice, {
+        format,
+        simplifiedB2B: zatcaB2b,
+        buyerRegistrationName: buyerNameForZatca,
+        buyerVatDigits,
+    });
 
     try {
         const egs = new EGS(egsunit as any);
@@ -806,11 +882,24 @@ export async function processZatcaPhase2(invoice: SalesInvoice, settings: ZATCAS
         }
     }
 
+    let buyer_vat = '';
+    if (invoice.party) {
+        const taxId = (await fyo.getValue(
+            ModelNameEnum.Party,
+            invoice.party,
+            'taxId'
+        )) as string | undefined;
+        buyer_vat = normalizeZatcaBuyerVat(taxId);
+    }
+
     const invoiceData: Record<string, unknown> = {
         name: invoice.name,
         date: invoice.date,
         zatca_uuid: invoice.zatca_uuid,
         buyer_name,
+        zatca_invoice_format: invoice.zatcaInvoiceFormat || 'Simplified',
+        zatca_b2b: Boolean(invoice.zatcaB2B),
+        buyer_vat,
         items: (invoice.items || []).map((item) => ({
             name: item.name,
             item: (item as any).item,

@@ -23,6 +23,10 @@ import { ZATCASettings } from '../ZATCASettings/ZATCASettings';
 
 export class SalesInvoice extends Invoice {
   items?: SalesInvoiceItem[];
+  /** ZATCA Phase 2: `Simplified` (default) or `Standard` tax invoice (BR-KSA-06). */
+  zatcaInvoiceFormat?: string;
+  /** When format is Simplified: VAT-registered buyer (requires customer Tax ID). Ignored for Standard (VAT always required). */
+  zatcaB2B?: boolean;
   zatca_qr?: string;
   zatca_uuid?: string;
   zatca_hash?: string;
@@ -31,6 +35,32 @@ export class SalesInvoice extends Invoice {
 
   async beforeSubmit() {
     await super.beforeSubmit();
+
+    const zatcaSettings = (await this.fyo.doc.getDoc(
+      ModelNameEnum.ZATCASettings,
+      ModelNameEnum.ZATCASettings
+    )) as ZATCASettings;
+
+    const zatcaFmt = (this.zatcaInvoiceFormat || 'Simplified').toLowerCase();
+    const isStandard = zatcaFmt === 'standard';
+    const needBuyerVat =
+      zatcaSettings?.zatcaEnabled &&
+      zatcaSettings.zatcaPhase === 'Phase 2' &&
+      (isStandard || this.zatcaB2B);
+    if (needBuyerVat) {
+      const partyDoc = (await this.fyo.doc.getDoc(
+        ModelNameEnum.Party,
+        this.party
+      )) as Party;
+      const vat = String(partyDoc?.taxId ?? '').replace(/\D/g, '');
+      if (vat.length !== 15) {
+        throw new ValidationError(
+          isStandard
+            ? t`ZATCA standard invoice: Customer must have a valid 15-digit VAT number (Tax ID).`
+            : t`ZATCA simplified B2B: Customer must have a valid 15-digit VAT number (Tax ID).`
+        );
+      }
+    }
   }
 
   async afterSubmit() {
@@ -112,11 +142,22 @@ export class SalesInvoice extends Invoice {
       }
     }
 
+    let buyer_vat = '';
+    if (this.party) {
+      buyer_vat = String(
+        (await this.fyo.getValue(ModelNameEnum.Party, this.party, 'taxId')) ??
+          ''
+      ).replace(/\D/g, '');
+    }
+
     const invoiceData: Record<string, unknown> = {
       name: this.name,
       date: this.date,
       zatca_uuid: this.zatca_uuid,
       buyer_name,
+      zatca_invoice_format: this.zatcaInvoiceFormat || 'Simplified',
+      zatca_b2b: Boolean(this.zatcaB2B),
+      buyer_vat,
       items: (this.items || []).map((item) => ({
         name: item.name,
         item: (item as any).item,

@@ -127,6 +127,24 @@
       "section": "References"
     },
     {
+      "fieldname": "zatcaInvoiceFormat",
+      "label": "ZATCA document type",
+      "fieldtype": "Select",
+      "default": "Simplified",
+      "options": [
+        { "value": "Simplified", "label": "Simplified tax invoice" },
+        { "value": "Standard", "label": "Standard tax invoice" }
+      ],
+      "section": "ZATCA Details"
+    },
+    {
+      "fieldname": "zatcaB2B",
+      "label": "Simplified B2B (customer has VAT — only when document type is Simplified)",
+      "fieldtype": "Check",
+      "default": false,
+      "section": "ZATCA Details"
+    },
+    {
       "fieldname": "zatca_qr",
       "label": "ZATCA QR Code (Base64)",
       "fieldtype": "Text",
